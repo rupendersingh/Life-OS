@@ -21,6 +21,56 @@ TASK_MIGRATION_COLUMNS = {
     "created_at": "TEXT",
 }
 
+SKILL_MIGRATION_COLUMNS = {
+    "name": "TEXT",
+    "category": "TEXT",
+    "target_hours": "REAL",
+    "created_at": "TEXT",
+}
+
+SKILL_PROGRESS_MIGRATION_COLUMNS = {
+    "skill_id": "INTEGER",
+    "date": "TEXT",
+    "hours_spent": "REAL",
+    "notes": "TEXT",
+}
+
+TIME_ENTRY_MIGRATION_COLUMNS = {
+    "start_time": "TEXT",
+    "end_time": "TEXT",
+    "duration_minutes": "REAL",
+    "category": "TEXT",
+    "notes": "TEXT",
+    "task_id": "INTEGER",
+}
+
+HR_CONTACT_MIGRATION_COLUMNS = {
+    "name": "TEXT",
+    "email": "TEXT",
+    "phone": "TEXT",
+    "company": "TEXT",
+}
+
+INTERVIEW_MIGRATION_COLUMNS = {
+    "company": "TEXT",
+    "role": "TEXT",
+    "stage": "TEXT",
+    "next_step_date": "TEXT",
+    "hr_contact_id": "INTEGER",
+    "notes": "TEXT",
+    "created_at": "TEXT",
+}
+
+EMAIL_LOG_MIGRATION_COLUMNS = {
+    "provider": "TEXT",
+    "message_id": "TEXT",
+    "subject": "TEXT",
+    "sender": "TEXT",
+    "received_at": "TEXT",
+    "snippet": "TEXT",
+    "interview_id": "INTEGER",
+}
+
 
 def get_connection(db_path: str | Path = DB_NAME) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
@@ -39,6 +89,20 @@ def _migrate_tasks_table(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE tasks ADD COLUMN {column_name} {column_definition}")
 
     conn.execute("UPDATE tasks SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+
+
+def _migrate_table_columns(
+    conn: sqlite3.Connection,
+    table_name: str,
+    columns: dict[str, str],
+) -> None:
+    existing_columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    for column_name, column_definition in columns.items():
+        if column_name not in existing_columns:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
 
 
 def init_db(db_path: str | Path = DB_NAME) -> None:
@@ -134,6 +198,14 @@ def init_db(db_path: str | Path = DB_NAME) -> None:
             """
         )
         _migrate_tasks_table(conn)
+        _migrate_table_columns(conn, "skills", SKILL_MIGRATION_COLUMNS)
+        _migrate_table_columns(conn, "skill_progress", SKILL_PROGRESS_MIGRATION_COLUMNS)
+        _migrate_table_columns(conn, "time_entries", TIME_ENTRY_MIGRATION_COLUMNS)
+        _migrate_table_columns(conn, "hr_contacts", HR_CONTACT_MIGRATION_COLUMNS)
+        _migrate_table_columns(conn, "interviews", INTERVIEW_MIGRATION_COLUMNS)
+        _migrate_table_columns(conn, "email_logs", EMAIL_LOG_MIGRATION_COLUMNS)
+        conn.execute("UPDATE skills SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+        conn.execute("UPDATE interviews SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
         conn.commit()
     finally:
         conn.close()

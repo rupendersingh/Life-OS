@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import date, timedelta
 from typing import Any
 
 from db import DB_NAME, get_connection, init_db
@@ -12,6 +13,65 @@ TASK_FIELDS = {
     "status",
     "is_top3_for_day",
     "is_daily_routine",
+    "created_at",
+}
+
+SKILL_FIELDS = {
+    "name",
+    "category",
+    "target_hours",
+    "created_at",
+}
+
+SKILL_PROGRESS_FIELDS = {
+    "skill_id",
+    "date",
+    "hours_spent",
+    "notes",
+}
+
+TIME_ENTRY_FIELDS = {
+    "start_time",
+    "end_time",
+    "duration_minutes",
+    "category",
+    "notes",
+    "task_id",
+}
+
+HR_CONTACT_FIELDS = {
+    "name",
+    "email",
+    "phone",
+    "company",
+}
+
+INTERVIEW_FIELDS = {
+    "company",
+    "role",
+    "stage",
+    "next_step_date",
+    "hr_contact_id",
+    "notes",
+    "created_at",
+}
+
+EMAIL_LOG_FIELDS = {
+    "provider",
+    "message_id",
+    "subject",
+    "sender",
+    "received_at",
+    "snippet",
+    "interview_id",
+}
+
+IDEA_FIELDS = {
+    "title",
+    "category",
+    "status",
+    "impact_estimate",
+    "notes",
     "created_at",
 }
 
@@ -75,6 +135,14 @@ def _normalize_task_fields(fields: dict[str, Any]) -> dict[str, Any]:
         if flag in normalized and normalized[flag] is not None:
             normalized[flag] = int(bool(normalized[flag]))
     return normalized
+
+
+def _validate_fields(fields: dict[str, Any], allowed_fields: set[str], label: str) -> dict[str, Any]:
+    invalid_fields = set(fields) - allowed_fields
+    if invalid_fields:
+        invalid = ", ".join(sorted(invalid_fields))
+        raise ValueError(f"Invalid {label} field(s): {invalid}")
+    return dict(fields)
 
 
 def create_task(
@@ -284,14 +352,14 @@ def get_skill(skill_id: int, db_path: str | Path = DB_NAME) -> dict[str, Any] | 
 
 
 def update_skill(skill_id: int, db_path: str | Path = DB_NAME, **fields: Any) -> None:
-    _update("skills", skill_id, fields, db_path)
+    _update("skills", skill_id, _validate_fields(fields, SKILL_FIELDS, "skill"), db_path)
 
 
 def delete_skill(skill_id: int, db_path: str | Path = DB_NAME) -> None:
     _delete("skills", skill_id, db_path)
 
 
-def create_skill_progress(
+def log_skill_progress(
     skill_id: int,
     date: str,
     hours_spent: float,
@@ -305,6 +373,16 @@ def create_skill_progress(
     )
 
 
+def create_skill_progress(
+    skill_id: int,
+    date: str,
+    hours_spent: float,
+    notes: str | None = None,
+    db_path: str | Path = DB_NAME,
+) -> int:
+    return log_skill_progress(skill_id, date, hours_spent, notes, db_path)
+
+
 def list_skill_progress(db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
     return _list_rows("SELECT * FROM skill_progress ORDER BY date DESC, id DESC", db_path=db_path)
 
@@ -314,11 +392,35 @@ def get_skill_progress(progress_id: int, db_path: str | Path = DB_NAME) -> dict[
 
 
 def update_skill_progress(progress_id: int, db_path: str | Path = DB_NAME, **fields: Any) -> None:
-    _update("skill_progress", progress_id, fields, db_path)
+    _update(
+        "skill_progress",
+        progress_id,
+        _validate_fields(fields, SKILL_PROGRESS_FIELDS, "skill progress"),
+        db_path,
+    )
 
 
 def delete_skill_progress(progress_id: int, db_path: str | Path = DB_NAME) -> None:
     _delete("skill_progress", progress_id, db_path)
+
+
+def get_skill_progress_summary(db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
+    return _list_rows(
+        """
+        SELECT
+            skills.id,
+            skills.name,
+            skills.category,
+            skills.target_hours,
+            COALESCE(SUM(skill_progress.hours_spent), 0) AS total_hours
+        FROM skills
+        LEFT JOIN skill_progress
+            ON skill_progress.skill_id = skills.id
+        GROUP BY skills.id, skills.name, skills.category, skills.target_hours
+        ORDER BY skills.name ASC
+        """,
+        db_path=db_path,
+    )
 
 
 def create_time_entry(
@@ -344,12 +446,41 @@ def list_time_entries(db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
     return _list_rows("SELECT * FROM time_entries ORDER BY start_time DESC", db_path=db_path)
 
 
+def list_time_entries_for_date(entry_date: str, db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
+    return _list_rows(
+        """
+        SELECT *
+        FROM time_entries
+        WHERE substr(start_time, 1, 10) = ?
+        ORDER BY start_time DESC
+        """,
+        (entry_date,),
+        db_path,
+    )
+
+
+def get_time_summary_for_date(entry_date: str, db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
+    return _list_rows(
+        """
+        SELECT
+            category,
+            SUM(duration_minutes) AS duration_minutes
+        FROM time_entries
+        WHERE substr(start_time, 1, 10) = ?
+        GROUP BY category
+        ORDER BY duration_minutes DESC
+        """,
+        (entry_date,),
+        db_path,
+    )
+
+
 def get_time_entry(entry_id: int, db_path: str | Path = DB_NAME) -> dict[str, Any] | None:
     return _get_row("SELECT * FROM time_entries WHERE id = ?", (entry_id,), db_path)
 
 
 def update_time_entry(entry_id: int, db_path: str | Path = DB_NAME, **fields: Any) -> None:
-    _update("time_entries", entry_id, fields, db_path)
+    _update("time_entries", entry_id, _validate_fields(fields, TIME_ENTRY_FIELDS, "time entry"), db_path)
 
 
 def delete_time_entry(entry_id: int, db_path: str | Path = DB_NAME) -> None:
@@ -379,7 +510,7 @@ def get_hr_contact(contact_id: int, db_path: str | Path = DB_NAME) -> dict[str, 
 
 
 def update_hr_contact(contact_id: int, db_path: str | Path = DB_NAME, **fields: Any) -> None:
-    _update("hr_contacts", contact_id, fields, db_path)
+    _update("hr_contacts", contact_id, _validate_fields(fields, HR_CONTACT_FIELDS, "HR contact"), db_path)
 
 
 def delete_hr_contact(contact_id: int, db_path: str | Path = DB_NAME) -> None:
@@ -409,12 +540,66 @@ def list_interviews(db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
     return _list_rows("SELECT * FROM interviews ORDER BY next_step_date ASC, created_at DESC", db_path=db_path)
 
 
+def list_active_interviews(db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
+    return _list_rows(
+        """
+        SELECT
+            interviews.*,
+            hr_contacts.name AS hr_contact_name,
+            hr_contacts.email AS hr_contact_email
+        FROM interviews
+        LEFT JOIN hr_contacts
+            ON hr_contacts.id = interviews.hr_contact_id
+        WHERE interviews.stage NOT IN ('Rejected', 'Offer')
+        ORDER BY
+            CASE WHEN interviews.next_step_date IS NULL THEN 1 ELSE 0 END,
+            interviews.next_step_date ASC,
+            interviews.created_at DESC
+        """,
+        db_path=db_path,
+    )
+
+
 def get_interview(interview_id: int, db_path: str | Path = DB_NAME) -> dict[str, Any] | None:
     return _get_row("SELECT * FROM interviews WHERE id = ?", (interview_id,), db_path)
 
 
 def update_interview(interview_id: int, db_path: str | Path = DB_NAME, **fields: Any) -> None:
-    _update("interviews", interview_id, fields, db_path)
+    _update("interviews", interview_id, _validate_fields(fields, INTERVIEW_FIELDS, "interview"), db_path)
+
+
+def append_interview_notes(
+    interview_id: int,
+    note: str,
+    db_path: str | Path = DB_NAME,
+) -> None:
+    interview = get_interview(interview_id, db_path=db_path)
+    if interview is None:
+        raise ValueError(f"Interview not found: {interview_id}")
+
+    existing_notes = (interview["notes"] or "").strip()
+    new_notes = note.strip()
+    combined_notes = f"{existing_notes}\n\n{new_notes}" if existing_notes else new_notes
+    update_interview(interview_id, db_path=db_path, notes=combined_notes)
+
+
+def get_upcoming_interviews(
+    db_path: str | Path = DB_NAME,
+    today: str | None = None,
+    days_ahead: int = 7,
+) -> list[dict[str, Any]]:
+    target_date = today or date.today().isoformat()
+    end_date = (date.fromisoformat(target_date) + timedelta(days=days_ahead)).isoformat()
+    return _list_rows(
+        """
+        SELECT *
+        FROM interviews
+        WHERE next_step_date BETWEEN ? AND ?
+        ORDER BY next_step_date ASC, created_at DESC
+        """,
+        (target_date, end_date),
+        db_path,
+    )
 
 
 def delete_interview(interview_id: int, db_path: str | Path = DB_NAME) -> None:
@@ -452,7 +637,15 @@ def get_email_log(email_log_id: int, db_path: str | Path = DB_NAME) -> dict[str,
 
 
 def update_email_log(email_log_id: int, db_path: str | Path = DB_NAME, **fields: Any) -> None:
-    _update("email_logs", email_log_id, fields, db_path)
+    _update("email_logs", email_log_id, _validate_fields(fields, EMAIL_LOG_FIELDS, "email log"), db_path)
+
+
+def link_email_log_to_interview(
+    email_log_id: int,
+    interview_id: int | None,
+    db_path: str | Path = DB_NAME,
+) -> None:
+    update_email_log(email_log_id, db_path=db_path, interview_id=interview_id)
 
 
 def delete_email_log(email_log_id: int, db_path: str | Path = DB_NAME) -> None:
@@ -474,8 +667,24 @@ def create_idea(
     )
 
 
-def list_ideas(db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
-    return _list_rows("SELECT * FROM ideas ORDER BY created_at DESC", db_path=db_path)
+def list_ideas(
+    category: str | None = None,
+    status: str | None = None,
+    db_path: str | Path = DB_NAME,
+) -> list[dict[str, Any]]:
+    query = "SELECT * FROM ideas WHERE 1 = 1"
+    params: list[Any] = []
+
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+
+    query += " ORDER BY created_at DESC, id DESC"
+    return _list_rows(query, tuple(params), db_path)
 
 
 def get_idea(idea_id: int, db_path: str | Path = DB_NAME) -> dict[str, Any] | None:
@@ -483,7 +692,7 @@ def get_idea(idea_id: int, db_path: str | Path = DB_NAME) -> dict[str, Any] | No
 
 
 def update_idea(idea_id: int, db_path: str | Path = DB_NAME, **fields: Any) -> None:
-    _update("ideas", idea_id, fields, db_path)
+    _update("ideas", idea_id, _validate_fields(fields, IDEA_FIELDS, "idea"), db_path)
 
 
 def delete_idea(idea_id: int, db_path: str | Path = DB_NAME) -> None:
