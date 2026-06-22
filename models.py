@@ -4,6 +4,18 @@ from typing import Any
 from db import DB_NAME, get_connection, init_db
 
 
+TASK_FIELDS = {
+    "title",
+    "description",
+    "due_date",
+    "priority",
+    "status",
+    "is_top3_for_day",
+    "is_daily_routine",
+    "created_at",
+}
+
+
 def initialize_db(db_path: str | Path = DB_NAME) -> None:
     init_db(db_path)
 
@@ -52,6 +64,19 @@ def _delete(table: str, record_id: int, db_path: str | Path = DB_NAME) -> None:
     _execute(f"DELETE FROM {table} WHERE id = ?", (record_id,), db_path)
 
 
+def _normalize_task_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    invalid_fields = set(fields) - TASK_FIELDS
+    if invalid_fields:
+        invalid = ", ".join(sorted(invalid_fields))
+        raise ValueError(f"Invalid task field(s): {invalid}")
+
+    normalized = dict(fields)
+    for flag in ("is_top3_for_day", "is_daily_routine"):
+        if flag in normalized and normalized[flag] is not None:
+            normalized[flag] = int(bool(normalized[flag]))
+    return normalized
+
+
 def create_task(
     title: str,
     due_date: str,
@@ -78,16 +103,163 @@ def list_tasks(db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
     return _list_rows("SELECT * FROM tasks ORDER BY due_date ASC, created_at DESC", db_path=db_path)
 
 
+def list_tasks_for_date(
+    due_date: str,
+    is_top3_for_day: bool | None = None,
+    status: str | None = None,
+    db_path: str | Path = DB_NAME,
+) -> list[dict[str, Any]]:
+    query = "SELECT * FROM tasks WHERE due_date = ?"
+    params: list[Any] = [due_date]
+
+    if is_top3_for_day is not None:
+        query += " AND is_top3_for_day = ?"
+        params.append(int(is_top3_for_day))
+
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+
+    query += " ORDER BY is_top3_for_day DESC, priority DESC, created_at DESC"
+    return _list_rows(query, tuple(params), db_path)
+
+
+def list_active_top3_tasks_for_date(due_date: str, db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
+    return _list_rows(
+        """
+        SELECT *
+        FROM tasks
+        WHERE due_date = ?
+          AND is_top3_for_day = 1
+          AND status != 'Done'
+        ORDER BY created_at DESC
+        """,
+        (due_date,),
+        db_path,
+    )
+
+
+def list_other_active_tasks_for_date(due_date: str, db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
+    return _list_rows(
+        """
+        SELECT *
+        FROM tasks
+        WHERE due_date = ?
+          AND status != 'Done'
+          AND is_top3_for_day = 0
+        ORDER BY priority DESC, created_at DESC
+        """,
+        (due_date,),
+        db_path,
+    )
+
+
+def list_completed_tasks_for_date(due_date: str, db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
+    return _list_rows(
+        """
+        SELECT *
+        FROM tasks
+        WHERE due_date = ?
+          AND status = 'Done'
+        ORDER BY created_at DESC
+        """,
+        (due_date,),
+        db_path,
+    )
+
+
+def get_task_completion_summary_for_date(due_date: str, db_path: str | Path = DB_NAME) -> dict[str, int]:
+    row = _get_row(
+        """
+        SELECT
+            COUNT(*) AS total_count,
+            SUM(CASE WHEN status = 'Done' THEN 1 ELSE 0 END) AS completed_count
+        FROM tasks
+        WHERE due_date = ?
+        """,
+        (due_date,),
+        db_path,
+    )
+    return {
+        "completed_count": int(row["completed_count"] or 0) if row else 0,
+        "total_count": int(row["total_count"] or 0) if row else 0,
+    }
+
+
+def list_top3_tasks_for_date(due_date: str, db_path: str | Path = DB_NAME) -> list[dict[str, Any]]:
+    return list_tasks_for_date(due_date, is_top3_for_day=True, db_path=db_path)
+
+
+def list_tasks_for_date_by_status(
+    due_date: str,
+    status: str,
+    db_path: str | Path = DB_NAME,
+) -> list[dict[str, Any]]:
+    return list_tasks_for_date(due_date, status=status, db_path=db_path)
+
+
 def get_task(task_id: int, db_path: str | Path = DB_NAME) -> dict[str, Any] | None:
     return _get_row("SELECT * FROM tasks WHERE id = ?", (task_id,), db_path)
 
 
 def update_task(task_id: int, db_path: str | Path = DB_NAME, **fields: Any) -> None:
-    _update("tasks", task_id, fields, db_path)
+    _update("tasks", task_id, _normalize_task_fields(fields), db_path)
 
 
 def delete_task(task_id: int, db_path: str | Path = DB_NAME) -> None:
     _delete("tasks", task_id, db_path)
+
+
+def ensure_daily_routines_for_date(due_date: str, db_path: str | Path = DB_NAME) -> int:
+    conn = get_connection(db_path)
+    try:
+        routine_tasks = conn.execute(
+            """
+            SELECT title, priority
+            FROM tasks
+            WHERE is_daily_routine = 1
+            ORDER BY created_at ASC
+            """
+        ).fetchall()
+
+        created_count = 0
+        for task in routine_tasks:
+            exists = conn.execute(
+                """
+                SELECT 1
+                FROM tasks
+                WHERE due_date = ?
+                  AND title = ?
+                LIMIT 1
+                """,
+                (due_date, task["title"]),
+            ).fetchone()
+            if exists:
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO tasks (
+                    title,
+                    due_date,
+                    priority,
+                    status,
+                    is_daily_routine
+                )
+                VALUES (?, ?, ?, 'Pending', 0)
+                """,
+                (
+                    task["title"],
+                    due_date,
+                    task["priority"],
+                ),
+            )
+            created_count += 1
+
+        conn.commit()
+        return created_count
+    finally:
+        conn.close()
 
 
 def create_skill(

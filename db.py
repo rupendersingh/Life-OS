@@ -5,11 +5,40 @@ from pathlib import Path
 DB_NAME = "life_ops.db"
 
 
+TASK_COLUMNS = {
+    "title": "TEXT",
+    "description": "TEXT",
+    "due_date": "TEXT",
+    "priority": "TEXT DEFAULT 'Medium' CHECK (priority IN ('Low', 'Medium', 'High'))",
+    "status": "TEXT DEFAULT 'Pending' CHECK (status IN ('Pending', 'In Progress', 'Done'))",
+    "is_top3_for_day": "INTEGER DEFAULT 0 CHECK (is_top3_for_day IN (0, 1))",
+    "is_daily_routine": "INTEGER DEFAULT 0 CHECK (is_daily_routine IN (0, 1))",
+    "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
+}
+
+TASK_MIGRATION_COLUMNS = {
+    **TASK_COLUMNS,
+    "created_at": "TEXT",
+}
+
+
 def get_connection(db_path: str | Path = DB_NAME) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _migrate_tasks_table(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+    }
+    for column_name, column_definition in TASK_MIGRATION_COLUMNS.items():
+        if column_name not in existing_columns:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {column_name} {column_definition}")
+
+    conn.execute("UPDATE tasks SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
 
 
 def init_db(db_path: str | Path = DB_NAME) -> None:
@@ -19,9 +48,9 @@ def init_db(db_path: str | Path = DB_NAME) -> None:
             """
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY,
-                title TEXT NOT NULL,
+                title TEXT,
                 description TEXT,
-                due_date TEXT NOT NULL,
+                due_date TEXT,
                 priority TEXT DEFAULT 'Medium'
                     CHECK (priority IN ('Low', 'Medium', 'High')),
                 status TEXT DEFAULT 'Pending'
@@ -104,6 +133,7 @@ def init_db(db_path: str | Path = DB_NAME) -> None:
             );
             """
         )
+        _migrate_tasks_table(conn)
         conn.commit()
     finally:
         conn.close()
